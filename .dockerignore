@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.egg-info/
+
+# Streamlit/Logs/Data
+.streamlit/*.json
+data/logs/*
+!data/logs/.gitkeep
+data/pdfs/*
+!data/pdfs/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Docker
+docker-compose.weaviate.yml
+
+# Development
+tests/
+*.md

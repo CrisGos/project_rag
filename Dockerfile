@@ -9,15 +9,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app ./app
+# Copiar pyproject.toml y código fuente
+COPY pyproject.toml .
+COPY rag_app ./rag_app
+
+# Instalar dependencias desde pyproject.toml
+RUN pip install --no-cache-dir .
+
+# Copiar datos
 COPY data ./data
 
-# ENV LLM_BACKEND=openai
-# ENV OPENAI_API_KEY=...
-# ENV EMBEDDINGS_BACKEND=openai
-
 EXPOSE 8501
-CMD ["streamlit", "run", "app/ui/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+
+CMD ["streamlit", "run", "rag_app/ui/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
