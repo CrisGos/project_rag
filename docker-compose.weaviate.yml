@@ -12,5 +12,28 @@ services:
       CLUSTER_HOSTNAME: "node1"
     volumes:
       - weaviate_data:/var/lib/weaviate
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  rag-app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - WEAVIATE_URL=http://weaviate:8080
+    depends_on:
+      - weaviate
+      - ollama
+
+
 volumes:
   weaviate_data:
+  ollama_data:

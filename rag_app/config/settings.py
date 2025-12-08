@@ -57,6 +57,12 @@ def _bool_env(name: str, default: bool) -> bool:
 
 ALLOW_OCR = _bool_env("ALLOW_OCR", True)
 
+# ========== Langfuse Observability ==========
+LANGFUSE_SECRET_KEY: str = os.getenv("LANGFUSE_SECRET_KEY", "")
+LANGFUSE_PUBLIC_KEY: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_HOST: str = os.getenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
+LANGFUSE_ENABLED: bool = _bool_env("LANGFUSE_ENABLED", False) 
+
 # ---------- HTTP helpers ----------
 def weaviate_ready() -> bool:
     try:

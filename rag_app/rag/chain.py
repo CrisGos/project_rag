@@ -15,7 +15,32 @@ from rag_app.config.settings import (
     REPLY_LANGUAGE,
     weaviate_graphql,
     WEAVIATE_CLASS,
+    LANGFUSE_SECRET_KEY,
+    LANGFUSE_PUBLIC_KEY,
+    LANGFUSE_HOST,
+    LANGFUSE_ENABLED,
 )
+
+# Langfuse imports
+LANGFUSE_AVAILABE = False
+langfuse_client = None
+
+try:
+    from langfuse import Langfuse    
+    LANGFUSE_AVAILABLE = True
+except ImportError:
+    pass
+
+# Initialize Langfuse client
+if LANGFUSE_AVAILABLE and LANGFUSE_ENABLED and LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY:
+    try:
+        langfuse_client = Langfuse(
+            secret_key = LANGFUSE_SECRET_KEY,
+            public_key = LANGFUSE_PUBLIC_KEY,
+            host=LANGFUSE_HOST,
+        )
+    except Exception:
+        langfuse_client = None
 
 
 # ========== Estado del Grafo ==========
@@ -127,13 +152,30 @@ def generate_node(state: RAGState) -> RAGState:
         ("system", _system_prompt()),
         ("human", f"Question: {question}\n\nContext:\n{context}"),
     ]
-    
-    # Generar respuesta
+
+   
+    # Generar respuesta    
     resp = llm.invoke(msgs)
-    
+
+    # Log to Langfuse if available
+    if langfuse_client:
+        try:
+            trace = langfuse_client.trace(
+                name="rag-generation",
+                metadata={"pdf_naem": state.get("pdf_name")},
+            )
+            trace.generation(
+                name="llm-call",
+                model=OLLAMA_CHAT_MODEL,
+                input={"question": question, "context": context[:500]},
+                output=resp.content,
+            )
+        except Exception:
+            pass
+
     return {
         **state,
-        "answer": resp.content,
+        "answer": resp.conent,
     }
 
 
@@ -193,6 +235,16 @@ def make_rag_chain():
         
         # Ejecutar el grafo
         final_state = graph.invoke(initial_state)
+
+        # Log trace end to Langfuse
+        trace = None
+        if trace:
+            try:
+                trace.update(
+                    output={"answer": final_state["answer"]},
+                )
+            except Exception:
+                pass
         
         # Retornar en el formato esperado
         return {

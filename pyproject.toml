@@ -37,12 +37,14 @@ dependencies = [
     "python-dotenv==1.0.1",
     "requests==2.32.3",
     # LangChain core packages
-    "langchain==0.3.7",
-    "langchain-community==0.3.7",
-    "langchain-core==0.3.15",
-    "langchain-text-splitters==0.3.8",
+    "langchain>=0.3.7",
+    "langchain-community>=0.3.7",
+    "langchain-core>=0.3.17",
+    "langchain-text-splitters>=0.3.8",
     # LangGraph - compatible con LangChain 0.3.x
-    "langgraph==0.2.28",
+    "langgraph>=0.2.28",
+    #Langfuse observability
+    "langfuse>=2.36.0",
 ]
 
 [project.optional-dependencies]

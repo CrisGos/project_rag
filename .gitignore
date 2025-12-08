@@ -11,7 +11,16 @@ data/logs/*
 !data/logs/.gitkeep
 data/pdfs/*
 !data/pdfs/.gitkeep
+.streamlit/secrets.toml
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Langfuse
+langfuse.log
