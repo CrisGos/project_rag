@@ -162,7 +162,7 @@ def generate_node(state: RAGState) -> RAGState:
         try:
             trace = langfuse_client.trace(
                 name="rag-generation",
-                metadata={"pdf_naem": state.get("pdf_name")},
+                metadata={"pdf_name": state.get("pdf_name")},
             )
             trace.generation(
                 name="llm-call",
@@ -175,7 +175,7 @@ def generate_node(state: RAGState) -> RAGState:
 
     return {
         **state,
-        "answer": resp.conent,
+        "answer": resp.content,
     }
 
 

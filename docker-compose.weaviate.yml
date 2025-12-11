@@ -25,14 +25,18 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8501:8501"
+      - "8000:8000"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - WEAVIATE_URL=http://weaviate:8080
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     depends_on:
       - weaviate
       - ollama
-
 
 volumes:
   weaviate_data:
