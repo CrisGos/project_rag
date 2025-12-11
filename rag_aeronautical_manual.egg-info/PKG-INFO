@@ -62,9 +62,11 @@ Este proyecto utiliza [uv](https://github.com/astral-sh/uv) para la gestión de 
     ```
 
 ### Ejecución
-Para correr la aplicación (ahora migrada a Chainlit):
+Para correr la aplicación:
 ```bash
-uv run chainlit run rag_app/ui/chat.py
+uv run rag-app
+# O directamente con streamlit
+uv run streamlit run rag_app/ui/app.py
 ```
 
 ### Docker

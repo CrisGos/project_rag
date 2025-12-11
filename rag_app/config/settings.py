@@ -61,6 +61,13 @@ def _bool_env(name: str, default: bool) -> bool:
 
 ALLOW_OCR = _bool_env("ALLOW_OCR", True)
 
+# ========== Langfuse Observability ==========
+LANGFUSE_SECRET_KEY: str = os.getenv("LANGFUSE_SECRET_KEY", "")
+LANGFUSE_PUBLIC_KEY: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_HOST: str = os.getenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
+LANGFUSE_ENABLED: bool = _bool_env("LANGFUSE_ENABLED", False) 
+
+
 def get_weaviate_client():
     from urllib.parse import urlparse
     parsed = urlparse(WEAVIATE_URL)
@@ -114,13 +121,3 @@ def ensure_weaviate_schema() -> None:
     except Exception as e:
         logger.error(f"Failed to ensure schema: {e}")
         raise
-
-# ========== Langfuse Observability ==========
-LANGFUSE_SECRET_KEY: str = os.getenv("LANGFUSE_SECRET_KEY", "")
-LANGFUSE_PUBLIC_KEY: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
-LANGFUSE_HOST: str = os.getenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
-LANGFUSE_ENABLED: bool = _bool_env("LANGFUSE_ENABLED", False) 
-
-# ========== Tavily settings ==========
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-ENABLE_WEB_SEARCH = os.getenv("ENABLE_WEB_SEARCH", "true").lower() == "true"
