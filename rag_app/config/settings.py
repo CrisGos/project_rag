@@ -67,6 +67,9 @@ LANGFUSE_PUBLIC_KEY: str = os.getenv("LANGFUSE_PUBLIC_KEY", "")
 LANGFUSE_HOST: str = os.getenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
 LANGFUSE_ENABLED: bool = _bool_env("LANGFUSE_ENABLED", False) 
 
+# ========== Tavily Search ==========
+TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+
 
 def get_weaviate_client():
     from urllib.parse import urlparse

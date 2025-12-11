@@ -31,6 +31,7 @@ async def on_chat_start():
             # Use 'select_...' prefix to identify this action type
             actions.append(cl.Action(name="select_pdf", value=p, payload={"value": p}, label=f"📚 {p}"))
     
+    actions.append(cl.Action(name="global_search", value="global", payload={"value": "global"}, label="🌍 Global Search (All Documents)"))
     actions.append(cl.Action(name="upload_pdf", value="new", payload={"value": "new"}, label="➕ Upload new PDF"))
 
     res = await cl.AskActionMessage(
@@ -43,6 +44,9 @@ async def on_chat_start():
         pdf_name = res.get("payload", {}).get("value")
         await setup_pdf(pdf_name)
     
+    elif res and res.get("name") == "global_search":
+        await setup_pdf(None)
+
     elif res and res.get("name") == "upload_pdf":
         await handle_file_upload()
 
@@ -90,44 +94,96 @@ async def handle_file_upload():
             msg.content = f"❌ Error building index: {e}"
             await msg.update()
 
-async def setup_pdf(pdf_name: str):
+async def setup_pdf(pdf_name: str | None):
     """
     Verify index and setup session.
     """
-    pdf_path = Path(PDF_DIR) / pdf_name
-    cl.user_session.set("pdf_name", pdf_name)
-    
-    # Verify index
-    msg = cl.Message(content=f"Verifying index for `{pdf_name}`...")
-    await msg.send()
-    
-    try:
-        is_indexed = await cl.make_async(verify_index_for_pdf)(str(pdf_path))
-        if is_indexed:
-            msg.content = f"✅ Ready to chat with `{pdf_name}`!"
+    if pdf_name:
+        pdf_path = Path(PDF_DIR) / pdf_name
+        cl.user_session.set("pdf_name", pdf_name)
+        
+        # Verify index
+        msg = cl.Message(content=f"Verifying index for `{pdf_name}`...")
+        await msg.send()
+        
+        try:
+            is_indexed = await cl.make_async(verify_index_for_pdf)(str(pdf_path))
+            if is_indexed:
+                msg.content = f"✅ Ready to chat with `{pdf_name}`!"
+                await msg.update()
+                
+                # Init RAG chain (reusable)
+                rag = make_rag_chain()
+                cl.user_session.set("rag_chain", rag)
+            else:
+                msg.content = f"⚠️ Index not found for `{pdf_name}`. Please trigger a rebuild via re-upload (or implement a rebuild action)."
+                await msg.update()
+        except Exception as e:
+            msg.content = f"❌ Error verifying index: {e}"
             await msg.update()
-            
-            # Init RAG chain
-            rag = make_rag_chain()
-            cl.user_session.set("rag_chain", rag)
-        else:
-            msg.content = f"⚠️ Index not found for `{pdf_name}`. Please trigger a rebuild via re-upload (or implement a rebuild action)."
-            await msg.update()
-            # For simplicity in this migration, we might point them back to upload if re-index is needed, 
-            # or just let them try which might fail.
-    except Exception as e:
-        msg.content = f"❌ Error verifying index: {e}"
-        await msg.update()
+    else:
+        # Global search setup
+        cl.user_session.set("pdf_name", "GLOBAL_SEARCH_SENTINEL") # Use a sentinel or just handle None? 
+        # Requirement says: "if flow requires pdf_name... ask explicitly". 
+        # But here we are EXPLICITLY choosing global.
+        # Let's treat None as Global in `main` loop logic.
+        cl.user_session.set("pdf_name", None)
+        rag = make_rag_chain()
+        cl.user_session.set("rag_chain", rag)
+        await cl.Message(content="✅ Ready to search across ALL documents!").send()
+
 
 
 @cl.on_message
 async def main(message: cl.Message):
     rag = cl.user_session.get("rag_chain")
-    pdf_name = cl.user_session.get("pdf_name")
+    # check if we have a set pdf_name (could be None for global, or a string)
+    # But wait, user_session.get("key") returning None could mean "not set" OR "set to None".
+    # Chainlit user_session behavior: if key doesn't exist, returns None. 
+    # Valid states for "pdf_name":
+    # 1. String "foo.pdf" -> Filtered
+    # 2. None (if we explicitly set it to None for global) -> Global
+    # 3. Key missing or never set? -> Should prompt.
+    
+    # Let's inspect how initialized. on_chat_start sets it to None initially.
+    # So we need a way to distinguish "Not selected yet" vs "Global Mode".
+    # I will use a string "ALL" or similar for Global in session, but map to None for backend?
+    # Or just check if rag_chain is initialized. rag_chain is only set AFTER setup_pdf.
+    
+    if not rag:
+         # Initial setup handling if user bypassed on_chat_start or something weird, but standard flow assumes prompt there.
+         # However, requirements say: "If the UI needs a document... and user hasn't specified... ask explicitly"
+         # If rag is None, it means we haven't finished setup.
+         
+         # List existing PDFs for the prompt
+         existing_pdfs = sorted([p.name for p in Path(PDF_DIR).glob("*.pdf")])
+         actions = [cl.Action(name="select_pdf", value=p, payload={"value": p}, label=f"📚 {p}") for p in existing_pdfs]
+         actions.append(cl.Action(name="global_search", value="global", payload={"value": "global"}, label="🌍 Global Search (All Documents)"))
+         
+         res = await cl.AskActionMessage(
+            content="⚠️ Document context not set. Which document do you want to query?",
+            actions=actions,
+            timeout=120
+         ).send()
+         
+         if res and res.get("name") == "select_pdf":
+             pdf_name = res.get("payload", {}).get("value")
+             await setup_pdf(pdf_name)
+             # Recursively call main? Or just wait for next message?
+             # Better to just run the query now that we have context.
+             # We need to re-fetch rag and pdf_name
+             rag = cl.user_session.get("rag_chain")
+             # pdf_name will be fetched below
+         elif res and res.get("name") == "global_search":
+             await setup_pdf(None)
+             rag = cl.user_session.get("rag_chain")
+         else:
+             await cl.Message("❌ No selection made. Please try again.").send()
+             return
 
-    if not rag or not pdf_name:
-        await cl.Message("⚠️ Please select a PDF first by restarting the chat (Refresh page).").send()
-        return
+    # Now we should have rag ready.
+    # pdf_name in session: None (Global) or String (Filtered)
+    pdf_name = cl.user_session.get("pdf_name")
 
     # Call RAG
     msg = cl.Message(content="")
@@ -140,17 +196,26 @@ async def main(message: cl.Message):
         resp = await cl.make_async(rag)(message.content, pdf_name=pdf_name, k=4)
         
         answer = resp.get("answer", "No answer generated.")
+        is_external = resp.get("is_external", False)
+        external_sources = resp.get("external_sources", [])
         source_docs = resp.get("source_docs", [])
         
         msg.content = answer
         
         # Append sources
-        if source_docs:
+        if is_external and external_sources:
+             elements = []
+             # Create simple text list or links for external sources
+             source_list = "\n".join([f"- {s}" for s in external_sources])
+             msg.content += f"\n\n**External Sources:**\n{source_list}"
+             
+        elif source_docs:
             elements = []
             for i, doc in enumerate(source_docs, 1):
                 page = doc.get('page_number', '?')
                 text = doc.get('text', '')[:500] + "..."
-                source_name = f"Page {page}"
+                doc_name = doc.get('pdf_name', pdf_name or "Unknown")
+                source_name = f"{doc_name} (p.{page})"
                 elements.append(
                     cl.Text(name=source_name, content=text, display="inline")
                 )

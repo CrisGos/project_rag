@@ -1,8 +1,10 @@
 # chain.py - Migrado a LangGraph
 from __future__ import annotations
 
-from typing import Dict, List, TypedDict, Annotated
+from typing import Dict, List, TypedDict, Annotated, Optional
 from operator import add
+
+from rag_app.services.tavily import query_tavily
 
 from langchain_community.chat_models import ChatOllama
 from langchain_community.embeddings import OllamaEmbeddings
@@ -54,6 +56,9 @@ class RAGState(TypedDict):
     context: str
     answer: str
     source_docs: List[dict]
+    # New fields for Tavily fallback
+    is_external: bool
+    external_sources: List[str]
 
 
 # ========== Funciones auxiliares ==========
@@ -66,7 +71,7 @@ def _system_prompt() -> str:
     )
 
 
-def retrieve_weaviate(query: str, pdf_name: str, k: int = 4) -> List[dict]:
+def retrieve_weaviate(query: str, pdf_name: str | None, k: int = 4) -> List[dict]:
     """
     Use Weaviate v4 client for retrieval.
     """
@@ -78,18 +83,27 @@ def retrieve_weaviate(query: str, pdf_name: str, k: int = 4) -> List[dict]:
     try:
         with get_weaviate_client() as client:
             collection = client.collections.get(WEAVIATE_CLASS)
-            results = collection.query.near_vector(
-                near_vector=qvec,
-                limit=int(k),
-                filters=Filter.by_property("pdf_name").equal(pdf_name),
-                return_metadata=["distance"]
-            )
+            if pdf_name:
+                results = collection.query.near_vector(
+                    near_vector=qvec,
+                    limit=int(k),
+                    filters=Filter.by_property("pdf_name").equal(pdf_name),
+                    return_metadata=["distance"]
+                )
+            else:
+                # Global search without filter
+                results = collection.query.near_vector(
+                    near_vector=qvec,
+                    limit=int(k),
+                    return_metadata=["distance"]
+                )
             
             for obj in results.objects:
                 out.append({
                     "text": obj.properties.get("text", ""),
                     "page_number": obj.properties.get("page_number"),
                     "chunk_id": obj.properties.get("chunk_id"),
+                    "pdf_name": obj.properties.get("pdf_name"),
                     "distance": obj.metadata.distance,
                 })
     except Exception as e:
@@ -97,6 +111,76 @@ def retrieve_weaviate(query: str, pdf_name: str, k: int = 4) -> List[dict]:
         print(f"Retrieval error: {e}")
         
     return out
+
+
+def check_exists_logic(state: RAGState) -> str:
+    """
+    Conditional logic to determine next step.
+    """
+    pdf_name = state.get("pdf_name")
+    if not pdf_name:
+         # If no pdf_name, maybe go to retrieve? Or just Tavily?
+         # Assuming intent is RAG on a doc. If global search (no pdf_name), 
+         # we probably stick to retrieval?
+         # Prompt says: "documento solicitado... no existe... Si false -> tavily".
+         # If no doc requested, standard RAG? 
+         # Let's assume pdf_name is required for this check.
+         # If pdf_name is None, let's just retrieve (global search).
+         return "retrieve"
+
+    # Check Weaviate
+    exists = False
+    try:
+        with get_weaviate_client() as client:
+            collection = client.collections.get(WEAVIATE_CLASS)
+            response = collection.query.fetch_objects(
+                limit=1,
+                filters=Filter.by_property("pdf_name").equal(pdf_name),
+                return_properties=["pdf_name"]
+            )
+            if len(response.objects) > 0:
+                exists = True
+    except Exception:
+        exists = False
+        
+    if exists:
+        return "retrieve"
+    else:
+        return "tavily_agent"
+
+
+def tavily_agent_node(state: RAGState) -> RAGState:
+    """
+    Node: Fallback to Tavily search when document is missing.
+    """
+    question = state["question"]
+    pdf_name = state.get("pdf_name", "")
+    
+    # Optional: Include pdf_name in query as hint
+    query = f"{question} (Context: {pdf_name})" if pdf_name else question
+    
+    result = query_tavily(query)
+    
+    # Format answer to indicate external source
+    answer = f"[External Search] {result['answer']}"
+    
+    return {
+        **state,
+        "answer": answer,
+        "is_external": True,
+        "external_sources": result["sources"]
+    }
+
+
+def check_answer_logic(state: RAGState) -> str:
+    """
+    Check if the generated answer is useful or if we need to fallback to Tavily.
+    """
+    answer = state.get("answer", "").lower()
+    # "don't know" logic as per prompt requirements
+    if "don't know" in answer or "do not know" in answer or "no connection" in answer:
+         return "tavily_agent"
+    return "end"
 
 
 # ========== Nodos del Grafo LangGraph ==========
@@ -110,9 +194,14 @@ def retrieve_node(state: RAGState) -> RAGState:
     
     # Recuperar documentos usando búsqueda vectorial
     docs = retrieve_weaviate(question, pdf_name=pdf_name, k=k)
+
+    # If global search, we might want to include the source PDF name in the context for the LLM
+    context_parts = []
+    for d in docs:
+        source_info = f"[DOC: {d.get('pdf_name', 'Unknown')}] " if not pdf_name else ""
+        context_parts.append(f"{source_info}[p.{d['page_number']}] {d['text']}")
     
-    # Construir contexto concatenando los chunks recuperados
-    context = "\n\n".join([f"[p.{d['page_number']}] {d['text']}" for d in docs])
+    context = "\n\n".join(context_parts)
     
     return {
         **state,
@@ -181,11 +270,31 @@ def build_rag_graph():
     # Agregar nodos al grafo
     workflow.add_node("retrieve", retrieve_node)
     workflow.add_node("generate", generate_node)
+    workflow.add_node("tavily_agent", tavily_agent_node)
     
     # Definir el flujo de ejecución
-    workflow.set_entry_point("retrieve")
+    # Entry point checks existence via conditional edge
+    workflow.set_conditional_entry_point(
+        check_exists_logic,
+        {
+            "retrieve": "retrieve",
+            "tavily_agent": "tavily_agent"
+        }
+    )
+    
     workflow.add_edge("retrieve", "generate")
-    workflow.add_edge("generate", END)
+    
+    # Conditional edge after generate to check if answer is valid
+    workflow.add_conditional_edges(
+        "generate",
+        check_answer_logic,
+        {
+            "end": END,
+            "tavily_agent": "tavily_agent"
+        }
+    )
+    
+    workflow.add_edge("tavily_agent", END)
     
     # Compilar el grafo
     return workflow.compile()
@@ -220,6 +329,8 @@ def make_rag_chain():
             "context": "",
             "answer": "",
             "source_docs": [],
+            "is_external": False,
+            "external_sources": [],
         }
         
         # Ejecutar el grafo
@@ -239,6 +350,8 @@ def make_rag_chain():
         return {
             "answer": final_state["answer"],
             "source_docs": final_state["source_docs"],
+            "is_external": final_state.get("is_external", False),
+            "external_sources": final_state.get("external_sources", []),
         }
     
     return run
