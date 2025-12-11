@@ -118,35 +118,21 @@ def check_exists_logic(state: RAGState) -> str:
     Conditional logic to determine next step.
     """
     pdf_name = state.get("pdf_name")
-    if not pdf_name:
-         # If no pdf_name, maybe go to retrieve? Or just Tavily?
-         # Assuming intent is RAG on a doc. If global search (no pdf_name), 
-         # we probably stick to retrieval?
-         # Prompt says: "documento solicitado... no existe... Si false -> tavily".
-         # If no doc requested, standard RAG? 
-         # Let's assume pdf_name is required for this check.
-         # If pdf_name is None, let's just retrieve (global search).
-         return "retrieve"
-
-    # Check Weaviate
-    exists = False
-    try:
-        with get_weaviate_client() as client:
-            collection = client.collections.get(WEAVIATE_CLASS)
-            response = collection.query.fetch_objects(
-                limit=1,
-                filters=Filter.by_property("pdf_name").equal(pdf_name),
-                return_properties=["pdf_name"]
-            )
-            if len(response.objects) > 0:
-                exists = True
-    except Exception:
-        exists = False
-        
-    if exists:
+    
+    # If pdf_name is provided (Manual Mode), we ALWAYS go to retrieve,
+    # even if it might not exist yet (it will just return empty docs).
+    # We do NOT fallback to Tavily in Manual Mode.
+    if pdf_name:
         return "retrieve"
-    else:
-        return "tavily_agent"
+
+    # For Global Mode (pdf_name is None), we also just go to retrieve.
+    # The prompt implies we might want to check for existence, but for Global 
+    # search we search everything. So 'retrieve' is always the correct first step.
+    # The original logic had a specific check for existence that seemed to want
+    # to fallback to Tavily if the PDF didn't exist, but that only applies if
+    # we aren't enforcing strict "Manual = Local Only".
+    
+    return "retrieve"
 
 
 def tavily_agent_node(state: RAGState) -> RAGState:
@@ -178,8 +164,11 @@ def check_answer_logic(state: RAGState) -> str:
     """
     answer = state.get("answer", "").lower()
     # "don't know" logic as per prompt requirements
-    if "don't know" in answer or "do not know" in answer or "no connection" in answer:
+    # "don't know" logic as per prompt requirements
+    # Only fallback to Tavily if we are in Global Mode (pdf_name is None)
+    if not state.get("pdf_name") and ("don't know" in answer or "do not know" in answer or "no connection" in answer):
          return "tavily_agent"
+    
     return "end"
 
 

@@ -2,6 +2,7 @@
 import chainlit as cl
 from pathlib import Path
 import shutil
+import re
 
 from rag_app.config.settings import PDF_DIR, ALLOW_OCR
 from rag_app.ingestion.build_index import build_vectorstore, verify_index_for_pdf
@@ -133,6 +134,44 @@ async def setup_pdf(pdf_name: str | None):
         await cl.Message(content="✅ Ready to search across ALL documents!").send()
 
 
+def _detect_aircraft_name(content: str) -> bool:
+    """
+    Simple heuristic to check if the user message contains a known aircraft name.
+    """
+    try:
+        # 1. Get all PDF names (stems)
+        pdf_files = list(Path(PDF_DIR).glob("*.pdf"))
+        # 2. Extract potential aircraft tokens.
+        tokens = set()
+        for p in pdf_files:
+            stem = p.stem
+            # Improved tokenization: split by any non-alphanumeric char
+            parts = re.split(r'[^a-zA-Z0-9]', stem)
+            for part in parts:
+                # Filter noise (e.g. "AC", "II", "POH" might be kept if length >= 3)
+                # "A320" -> length 4 -> kept
+                # "0624" -> length 4 -> kept (maybe specific enough)
+                if len(part) >= 3:
+                     tokens.add(part.lower())
+            
+        # 3. Check if any token is present in the user content
+        content_lower = content.lower()
+        for token in tokens:
+            if token in content_lower:
+                return True
+        
+        # 4. Fallback: Check for explicit "Name: Query" format for unknown aircraft
+        # Regex: Start of line, Word-like (>=2 chars), Colon
+        if re.match(r'^\s*[\w\-.]{2,}\s*:', content):
+            return True
+
+        return False
+        
+    except Exception:
+        # Fail safe
+        return False
+
+
 
 @cl.on_message
 async def main(message: cl.Message):
@@ -184,6 +223,16 @@ async def main(message: cl.Message):
     # Now we should have rag ready.
     # pdf_name in session: None (Global) or String (Filtered)
     pdf_name = cl.user_session.get("pdf_name")
+
+    # GUARDRAIL: If Global Search (pdf_name is None), require aircraft name in query.
+    if pdf_name is None:
+        if not _detect_aircraft_name(message.content):
+             await cl.Message(
+                 content="✈️ **Global Search Guardrail**\n\n"
+                         "To use Global Search (searching across ALL manuals), you must explicitly mention the aircraft name in your question.\n\n"
+                         "**Example:** 'A320: What is the maximum operating altitude?'"
+             ).send()
+             return
 
     # Call RAG
     msg = cl.Message(content="")
