@@ -70,7 +70,7 @@ def retrieve_weaviate(query: str, pdf_name: str, k: int = 4) -> List[dict]:
     """
     Use Weaviate v4 client for retrieval.
     """
-    embed = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL)
+    embed = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
     qvec = embed.embed_query(query)
     
     out: List[dict] = []

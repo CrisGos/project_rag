@@ -34,5 +34,5 @@ uv run chainlit run rag_app/ui/chat.py
 El contenedor actualizado utiliza `uv` internamente.
 ```bash
 docker build -t rag_app .
-docker run -p 8501:8501 rag_app
+docker run -p 8000:8000 rag_app
 ```

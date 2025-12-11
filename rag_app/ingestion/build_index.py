@@ -19,6 +19,7 @@ from rag_app.config.settings import (
     get_weaviate_client,
     WEAVIATE_CLASS,
     OLLAMA_EMBED_MODEL,
+    OLLAMA_BASE_URL,
 )
 from weaviate.classes.query import Filter
 
@@ -74,7 +75,7 @@ def _batch_upsert(pdf_name: str, chunks: List[dict]) -> None:
     """
     Upsert using client.batch.dynamic().
     """
-    embed = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL)
+    embed = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL, base_url=OLLAMA_BASE_URL)
     try:
         vectors = embed.embed_documents([c["text"] for c in chunks])
     except Exception as e:
