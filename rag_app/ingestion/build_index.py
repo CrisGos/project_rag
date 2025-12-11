@@ -15,12 +15,12 @@ from langchain_community.embeddings import OllamaEmbeddings
 from rag_app.config.settings import (
     PDF_DIR,
     logger,
-    ensure_weaviate_schema_http,
-    weaviate_ready,
-    weaviate_graphql,
+    ensure_weaviate_schema,
+    get_weaviate_client,
     WEAVIATE_CLASS,
     OLLAMA_EMBED_MODEL,
 )
+from weaviate.classes.query import Filter
 
 
 # ---------- PDF loading ----------
@@ -30,19 +30,27 @@ def load_pdf_text(pdf_path: str, use_ocr: bool) -> List[Tuple[int, str]]:
     """
     pages: List[Tuple[int, str]] = []
     if not use_ocr:
-        reader = PdfReader(pdf_path)
-        for i, page in enumerate(reader.pages, start=1):
-            text = (page.extract_text() or "").strip()
-            if text:
-                pages.append((i, text))
+        try:
+            reader = PdfReader(pdf_path)
+            for i, page in enumerate(reader.pages, start=1):
+                text = (page.extract_text() or "").strip()
+                if text:
+                    pages.append((i, text))
+        except Exception as e:
+            logger.error(f"PDF reading failed: {e}")
+            raise
     else:
         # OCR path; requires poppler and tesseract installed on the system
-        images = convert_from_path(pdf_path, dpi=200)
-        for i, img in enumerate(images, start=1):
-            text = pytesseract.image_to_string(img) or ""
-            text = text.strip()
-            if text:
-                pages.append((i, text))
+        try:
+            images = convert_from_path(pdf_path, dpi=200)
+            for i, img in enumerate(images, start=1):
+                text = pytesseract.image_to_string(img) or ""
+                text = text.strip()
+                if text:
+                    pages.append((i, text))
+        except Exception as e:
+            logger.error(f"OCR failed: {e}")
+            raise
     return pages
 
 
@@ -61,71 +69,75 @@ def split_pages_to_chunks(pages: List[Tuple[int, str]]) -> List[dict]:
     return chunks
 
 
-# ---------- Weaviate helpers (HTTP-only, manual vectors) ----------
-def _batch_upsert_http(pdf_name: str, chunks: List[dict]) -> None:
+# ---------- Weaviate helpers (v4 Client) ----------
+def _batch_upsert(pdf_name: str, chunks: List[dict]) -> None:
     """
-    Upsert using /v1/batch/objects via settings.weaviate_batch_upsert() logic.
-    Here we expand inline to avoid circular imports.
+    Upsert using client.batch.dynamic().
     """
-    from rag_app.config.settings import weaviate_batch_upsert  # local import
-
     embed = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL)
-    vectors = embed.embed_documents([c["text"] for c in chunks])
+    try:
+        vectors = embed.embed_documents([c["text"] for c in chunks])
+    except Exception as e:
+        logger.error(f"Embedding generation failed: {e}")
+        raise
 
-    objects = []
-    for c, v in zip(chunks, vectors):
-        objects.append(
-            {
-                "class": WEAVIATE_CLASS,
-                "properties": {
-                    "pdf_name": pdf_name,
-                    "page_number": int(c["page_number"]),
-                    "chunk_id": c["chunk_id"],
-                    "text": c["text"],
-                },
-                "vector": v,
-            }
-        )
-    weaviate_batch_upsert(objects)
+    try:
+        with get_weaviate_client() as client:
+            collection = client.collections.get(WEAVIATE_CLASS)
+            logger.info("Starting batch upload of %d chunks...", len(chunks))
+            
+            with collection.batch.dynamic() as batch:
+                for c, v in zip(chunks, vectors):
+                    batch.add_object(
+                        properties={
+                            "pdf_name": pdf_name,
+                            "page_number": int(c["page_number"]),
+                            "chunk_id": c["chunk_id"],
+                            "text": c["text"],
+                        },
+                        vector=v
+                    )
+            
+            # Check for failed objects
+            if len(client.batch.failed_objects) > 0:
+                logger.error(f"Batch upload had {len(client.batch.failed_objects)} failures.")
+                for fail in client.batch.failed_objects[:5]:
+                    logger.error(f"Failure: {fail.message}")
+                raise RuntimeError("Weaviate batch upsert had failures.")
+                
+            logger.info("Batch upload completed.")
+            
+    except Exception as e:
+        logger.error(f"Batch upsert failed: {e}")
+        raise
 
 
 def verify_index_for_pdf(pdf_path: str) -> bool:
     """
-    Existence check via GraphQL Aggregate.meta.count. Inline the where block
-    (no variables) to avoid input-type mismatches.
+    Check if chunks exist for this PDF using aggregation.
     """
-    if not weaviate_ready():
-        raise RuntimeError("Weaviate not ready on /v1/.well-known/ready")
-
-    ensure_weaviate_schema_http()
-
+    ensure_weaviate_schema()
     pdf_name = Path(pdf_path).name
-    q = f"""
-{{
-  Aggregate {{
-    {WEAVIATE_CLASS}(
-      where: {{
-        operator: Equal
-        path: ["pdf_name"]
-        valueText: {json.dumps(pdf_name)}
-      }}
-    ) {{
-      meta {{ count }}
-    }}
-  }}
-}}
-"""
-    resp = weaviate_graphql(q, {})
-    count = resp["data"]["Aggregate"][WEAVIATE_CLASS][0]["meta"]["count"]
-    return int(count) > 0
+    
+    try:
+        with get_weaviate_client() as client:
+            if not client.collections.exists(WEAVIATE_CLASS):
+                return False
+                
+            collection = client.collections.get(WEAVIATE_CLASS)
+            count_res = collection.aggregate.over_all(
+                filters=Filter.by_property("pdf_name").equal(pdf_name),
+                total_count=True
+            )
+            return count_res.total_count > 0
+    except Exception as e:
+        logger.warning(f"Index verification failed: {e}")
+        return False
 
 
 # ---------- Orchestration ----------
 def build_vectorstore(pdf_path: str, use_ocr: bool = False) -> str:
-    if not weaviate_ready():
-        raise RuntimeError("Weaviate not ready on /v1/.well-known/ready")
-
-    ensure_weaviate_schema_http()
+    ensure_weaviate_schema()
 
     logger.info("Building index for %s (OCR=%s)", pdf_path, use_ocr)
     pages = load_pdf_text(pdf_path, use_ocr=use_ocr)
@@ -134,6 +146,7 @@ def build_vectorstore(pdf_path: str, use_ocr: bool = False) -> str:
 
     chunks = split_pages_to_chunks(pages)
     pdf_name = Path(pdf_path).name
-    _batch_upsert_http(pdf_name, chunks)
+    _batch_upsert(pdf_name, chunks)
     logger.info("Index built for %s", pdf_name)
     return pdf_name
+

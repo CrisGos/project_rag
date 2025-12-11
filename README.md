@@ -16,8 +16,16 @@ Este proyecto utiliza [uv](https://github.com/astral-sh/uv) para la gestión de 
     uv sync
     ```
 
+### Servicios Requeridos (Docker)
+Esta aplicación requiere una base de datos vectorial (Weaviate) y un servidor de modelos (Ollama).
+1. Asegúrate de tener **Docker Desktop** instalado y **corriendo**.
+2. Levanta los servicios:
+    ```bash
+    docker-compose -f docker-compose.weaviate.yml up -d
+    ```
+
 ### Ejecución
-Para correr la aplicación (ahora migrada a Chainlit):
+Una vez que los servicios de Docker estén corriendo:
 ```bash
 uv run chainlit run rag_app/ui/chat.py
 ```

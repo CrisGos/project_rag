@@ -1,6 +1,6 @@
 # chain.py - Migrado a LangGraph
 from __future__ import annotations
-import json
+
 from typing import Dict, List, TypedDict, Annotated
 from operator import add
 
@@ -13,13 +13,14 @@ from rag_app.config.settings import (
     OLLAMA_CHAT_MODEL,
     OLLAMA_EMBED_MODEL,
     REPLY_LANGUAGE,
-    weaviate_graphql,
+    get_weaviate_client,
     WEAVIATE_CLASS,
     LANGFUSE_SECRET_KEY,
     LANGFUSE_PUBLIC_KEY,
     LANGFUSE_HOST,
     LANGFUSE_ENABLED,
 )
+from weaviate.classes.query import Filter
 
 # Langfuse imports
 LANGFUSE_AVAILABE = False
@@ -67,46 +68,34 @@ def _system_prompt() -> str:
 
 def retrieve_weaviate(query: str, pdf_name: str, k: int = 4) -> List[dict]:
     """
-    Use Weaviate GraphQL Get with inline where + nearVector, no variables.
+    Use Weaviate v4 client for retrieval.
     """
     embed = OllamaEmbeddings(model=OLLAMA_EMBED_MODEL)
     qvec = embed.embed_query(query)
     
-    gql = f"""
-{{
-  Get {{
-    {WEAVIATE_CLASS}(
-      where: {{
-        operator: Equal
-        path: ["pdf_name"]
-        valueText: {json.dumps(pdf_name)}
-      }}
-      nearVector: {{
-        vector: {json.dumps(qvec)}
-      }}
-      limit: {int(k)}
-    ) {{
-      text
-      page_number
-      chunk_id
-      _additional {{ distance }}
-    }}
-  }}
-}}
-"""
-    resp = weaviate_graphql(gql, {})
-    objs = resp["data"]["Get"][WEAVIATE_CLASS]
-    
     out: List[dict] = []
-    for o in objs:
-        out.append(
-            {
-                "text": o.get("text", ""),
-                "page_number": o.get("page_number"),
-                "chunk_id": o.get("chunk_id"),
-                "distance": o.get("_additional", {}).get("distance"),
-            }
-        )
+    
+    try:
+        with get_weaviate_client() as client:
+            collection = client.collections.get(WEAVIATE_CLASS)
+            results = collection.query.near_vector(
+                near_vector=qvec,
+                limit=int(k),
+                filters=Filter.by_property("pdf_name").equal(pdf_name),
+                return_metadata=["distance"]
+            )
+            
+            for obj in results.objects:
+                out.append({
+                    "text": obj.properties.get("text", ""),
+                    "page_number": obj.properties.get("page_number"),
+                    "chunk_id": obj.properties.get("chunk_id"),
+                    "distance": obj.metadata.distance,
+                })
+    except Exception as e:
+        # Fallback or log if retrieval fails
+        print(f"Retrieval error: {e}")
+        
     return out
 
 
